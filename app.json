@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "Sinergy GPS Fuel",
+    "slug": "sinergy-gps-fuel-app",
+    "scheme": "sinergygpsfuel",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/fav4.png",
+    "userInterfaceStyle": "dark",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/fav4.png"
+    },
+    "android": {
+      "package": "cl.sinergy.gpsfuel"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "100e252d-06b4-4e93-907c-429c10b915f1"
+      }
+    }
+  }
+}
