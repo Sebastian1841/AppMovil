@@ -8,12 +8,12 @@ import {
   View,
 } from 'react-native';
 
+import { buildFuelReport, getFuelHistory } from '@/api';
 import { AppHeader } from '@/components/AppHeader';
 import { Screen } from '@/components/Screen';
 import { ReportsCalendarModal } from '@/components/reports/ReportsCalendarModal';
 import { ReportsDeviceModal } from '@/components/reports/ReportsDeviceModal';
 import { ReportsExportModal } from '@/components/reports/ReportsExportModal';
-import { ReportsResults } from '@/components/reports/ReportsResults';
 import {
   formatDisplayDate,
   parseIsoDate,
@@ -30,15 +30,44 @@ import {
   TEXT_PRIMARY,
   TEXT_SECONDARY,
 } from '@/components/reports/reportsTheme';
-import { buildFuelReport, getFuelHistory } from '@/api';
 import { useDevices } from '@/hooks/useDevices';
+import { exportFuelCsv, exportFuelPdf } from '@/services/exportService';
 import { useAuthStore } from '@/store/authStore';
 import { colors } from '@/theme/colors';
-import { isoDateDaysAgo, todayIsoDate } from '@/utils/format';
+import {
+  formatDateTime,
+  formatLiters,
+  isoDateDaysAgo,
+  todayIsoDate,
+} from '@/utils/format';
 
 type CalendarTarget = 'from' | 'to' | null;
 
-export default function ReportsScreen() {
+function splitFormattedDateTime(value?: string) {
+  if (!value) {
+    return {
+      date: '--',
+      time: '--',
+    };
+  }
+
+  const formatted = formatDateTime(value);
+  const parts = formatted.split(',');
+
+  if (parts.length >= 2) {
+    return {
+      date: parts[0]?.trim() || '--',
+      time: parts.slice(1).join(',').trim() || '--',
+    };
+  }
+
+  return {
+    date: formatted,
+    time: '--',
+  };
+}
+
+export default function FuelScreen() {
   const user = useAuthStore((state) => state.user);
   const devicesQuery = useDevices();
   const devices = devicesQuery.data ?? [];
@@ -62,8 +91,8 @@ export default function ReportsScreen() {
   const [infoModalTitle, setInfoModalTitle] = useState('');
   const [infoModalMessage, setInfoModalMessage] = useState('');
 
-  const reportQuery = useQuery({
-    queryKey: ['fuel-report', identifier, dateFrom, dateTo, user?.username],
+  const historyQuery = useQuery({
+    queryKey: ['fuel-history', identifier, dateFrom, dateTo, user?.username],
     queryFn: () =>
       getFuelHistory({
         token: user!.token,
@@ -75,20 +104,34 @@ export default function ReportsScreen() {
     staleTime: 15_000,
   });
 
-  const report = useMemo(
-    () => buildFuelReport(reportQuery.data ?? []),
-    [reportQuery.data]
-  );
+  const events = historyQuery.data ?? [];
+  const report = useMemo(() => buildFuelReport(events), [events]);
+
+  const selectedDevice = useMemo(() => {
+    if (!identifier) return null;
+    return devices.find((device) => device.identifier === identifier) ?? null;
+  }, [devices, identifier]);
 
   const selectedDeviceLabel = useMemo(() => {
     if (!identifier) return 'Selecciona un equipo';
 
-    const found = devices.find((device) => device.identifier === identifier);
-    return found ? `${found.name} · ${found.identifier}` : identifier;
-  }, [devices, identifier]);
+    return selectedDevice
+      ? `${selectedDevice.name} · ${selectedDevice.identifier}`
+      : identifier;
+  }, [selectedDevice, identifier]);
 
   const selectedCalendarDate = parseIsoDate(
     calendarTarget === 'from' ? dateFrom : dateTo
+  );
+
+  const firstEventParts = useMemo(
+    () => splitFormattedDateTime(report.firstEvent),
+    [report.firstEvent]
+  );
+
+  const lastEventParts = useMemo(
+    () => splitFormattedDateTime(report.lastEvent),
+    [report.lastEvent]
   );
 
   const openInfoModal = (title: string, message: string) => {
@@ -97,25 +140,86 @@ export default function ReportsScreen() {
     setInfoModalVisible(true);
   };
 
-  const handleGenerate = () => {
+  const handleSearch = () => {
     if (!identifier) {
       openInfoModal(
         'Equipo requerido',
-        'Selecciona un equipo para generar el reporte.'
+        'Selecciona un equipo para consultar.'
       );
       return;
     }
 
     setSubmitted(true);
-    reportQuery.refetch();
+    historyQuery.refetch();
   };
 
-  const handleExport = (format: 'CSV' | 'PDF') => {
+  const handleExport = async (format: 'CSV' | 'PDF') => {
     setExportModalVisible(false);
-    openInfoModal(
-      `Exportar ${format}`,
-      `La exportación ${format} queda preparada para conectarla cuando habilites ese endpoint en backend.`
-    );
+
+    if (!identifier) {
+      openInfoModal(
+        'Equipo requerido',
+        'Selecciona un equipo antes de exportar.'
+      );
+      return;
+    }
+
+    if (!events.length) {
+      openInfoModal(
+        'Sin datos',
+        'No hay descargas para exportar con los filtros seleccionados.'
+      );
+      return;
+    }
+
+    try {
+      const filenameBase = `combustible_${identifier}_${dateFrom}_${dateTo}`;
+
+      const normalizedEvents = events.map((event) => ({
+        id: event.id ?? '',
+        liters: event.liters ?? 0,
+        timestamp: event.timestamp ?? '',
+        ibutton: event.ibutton ?? '',
+        ibuttonName: event.ibuttonName ?? '',
+        address: event.address ?? '',
+      }));
+
+      if (format === 'CSV') {
+        await exportFuelCsv({
+          filename: `${filenameBase}.csv`,
+          events: normalizedEvents,
+        });
+
+        openInfoModal(
+          'Exportación completada',
+          'El archivo CSV fue generado correctamente.'
+        );
+        return;
+      }
+
+      await exportFuelPdf({
+        filename: `${filenameBase}.pdf`,
+        title: 'Combustible',
+        deviceName: selectedDevice?.name || identifier,
+        identifier,
+        dateFrom,
+        dateTo,
+        report,
+        events: normalizedEvents,
+      });
+
+      openInfoModal(
+        'Exportación completada',
+        'El archivo PDF fue generado correctamente.'
+      );
+    } catch (error) {
+      openInfoModal(
+        'Error de exportación',
+        error instanceof Error
+          ? error.message
+          : 'No se pudo exportar el archivo.'
+      );
+    }
   };
 
   const handleClear = () => {
@@ -125,6 +229,7 @@ export default function ReportsScreen() {
     setSubmitted(false);
     setDeviceModalVisible(false);
     setCalendarTarget(null);
+    setExportModalVisible(false);
   };
 
   const openCalendar = (target: Exclude<CalendarTarget, null>) => {
@@ -147,12 +252,169 @@ export default function ReportsScreen() {
     setCalendarTarget(null);
   };
 
+  const renderOverview = () => {
+    if (!submitted || historyQuery.isError || historyQuery.isFetching || events.length === 0) {
+      return null;
+    }
+
+    return (
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Vista general</Text>
+
+        <View style={styles.overviewHero}>
+          <Text style={styles.overviewLabel}>Total del período</Text>
+          <Text style={styles.overviewTotal}>{formatLiters(report.totalLiters)}</Text>
+          <Text style={styles.overviewText}>
+            Consumo consolidado para el rango seleccionado
+          </Text>
+        </View>
+
+        <View style={styles.overviewGrid}>
+          <View style={styles.overviewSmallCard}>
+            <Text style={styles.overviewLabel}>Eventos</Text>
+            <Text style={styles.overviewNumber}>{report.totalEvents}</Text>
+          </View>
+
+          <View style={styles.overviewSmallCard}>
+            <Text style={styles.overviewLabel}>Período</Text>
+            <Text style={styles.overviewPeriodText}>
+              {formatDisplayDate(dateFrom)} - {formatDisplayDate(dateTo)}
+            </Text>
+          </View>
+
+          <View style={styles.overviewSmallCard}>
+            <Text style={styles.overviewLabel}>Primer evento</Text>
+            <Text style={styles.overviewDate}>{firstEventParts.date}</Text>
+            <Text style={styles.overviewTime}>{firstEventParts.time}</Text>
+          </View>
+
+          <View style={styles.overviewSmallCard}>
+            <Text style={styles.overviewLabel}>Último evento</Text>
+            <Text style={styles.overviewDate}>{lastEventParts.date}</Text>
+            <Text style={styles.overviewTime}>{lastEventParts.time}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderDownloads = () => {
+    if (historyQuery.isFetching) {
+      return (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Descargas</Text>
+          <View style={styles.stateBox}>
+            <Text style={styles.stateBadge}>Cargando</Text>
+            <Text style={styles.stateTitle}>Consultando descargas</Text>
+            <Text style={styles.stateText}>
+              Estamos obteniendo los eventos reales del rango seleccionado.
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (!submitted) {
+      return (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Descargas</Text>
+          <View style={styles.stateBox}>
+            <Text style={styles.stateBadge}>Pendiente</Text>
+            <Text style={styles.stateTitle}>Consulta pendiente</Text>
+            <Text style={styles.stateText}>
+              Selecciona un equipo y un rango de fechas para ver las descargas.
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (historyQuery.isError) {
+      return (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Descargas</Text>
+          <View style={styles.stateBox}>
+            <Text style={styles.stateBadge}>Error</Text>
+            <Text style={styles.stateTitle}>No fue posible consultar</Text>
+            <Text style={styles.stateText}>
+              {(historyQuery.error as Error)?.message ||
+                'Revisa el endpoint de combustible.'}
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (events.length === 0) {
+      return (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Descargas</Text>
+          <View style={styles.stateBox}>
+            <Text style={styles.stateBadge}>Vacío</Text>
+            <Text style={styles.stateTitle}>Sin eventos</Text>
+            <Text style={styles.stateText}>
+              No se encontraron descargas para el equipo y rango seleccionados.
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Descargas</Text>
+
+        <View style={styles.eventsList}>
+          {events.map((event) => (
+            <View key={event.id} style={styles.eventCard}>
+              <View style={styles.eventTopRow}>
+                <View style={styles.eventMain}>
+                  <Text style={styles.eventLiters}>
+                    {formatLiters(event.liters)}
+                  </Text>
+                  <Text style={styles.eventDate}>
+                    {event.timestamp ? formatDateTime(event.timestamp) : 'Sin fecha'}
+                  </Text>
+                </View>
+
+                <Text style={styles.eventTag}>Descarga</Text>
+              </View>
+
+              <View style={styles.metaRow}>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>IButton</Text>
+                  <Text style={styles.metaValue}>
+                    {event.ibutton || 'Sin dato'}
+                  </Text>
+                </View>
+
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>Nombre iButton</Text>
+                  <Text style={styles.metaValue}>
+                    {event.ibuttonName || 'Sin dato'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.addressRow}>
+                <Text style={styles.addressLabel}>Dirección</Text>
+                <Text style={styles.addressText}>
+                  {event.address || 'Sin dirección disponible'}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
   return (
     <Screen scroll contentContainerStyle={styles.page}>
-      <AppHeader title="Reportes de Combustible" />
+      <AppHeader title="Combustible" />
 
       <View style={styles.panel}>
-        <Text style={styles.panelTitle}>Generador de reportes</Text>
+        <Text style={styles.panelTitle}>Consulta y exportación</Text>
 
         <View style={styles.fieldBlock}>
           <Text style={styles.fieldLabel}>Equipo</Text>
@@ -220,13 +482,13 @@ export default function ReportsScreen() {
 
         <View style={styles.actionsPrimaryRow}>
           <Pressable
-            onPress={handleGenerate}
+            onPress={handleSearch}
             style={({ pressed }) => [
               styles.primaryButtonWide,
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text style={styles.primaryButtonText}>Generar informe</Text>
+            <Text style={styles.primaryButtonText}>Consultar</Text>
           </Pressable>
         </View>
 
@@ -238,7 +500,7 @@ export default function ReportsScreen() {
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text style={styles.secondaryButtonText}>Exportar reporte</Text>
+            <Text style={styles.secondaryButtonText}>Exportar</Text>
           </Pressable>
 
           <Pressable
@@ -248,21 +510,13 @@ export default function ReportsScreen() {
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text style={styles.ghostButtonText}>Limpiar filtros</Text>
+            <Text style={styles.ghostButtonText}>Limpiar</Text>
           </Pressable>
         </View>
       </View>
 
-      <ReportsResults
-        submitted={submitted}
-        isFetching={reportQuery.isFetching}
-        isError={reportQuery.isError}
-        errorMessage={(reportQuery.error as Error)?.message}
-        report={report}
-        events={reportQuery.data ?? []}
-        dateFrom={dateFrom}
-        dateTo={dateTo}
-      />
+      {renderOverview()}
+      {renderDownloads()}
 
       <ReportsDeviceModal
         visible={deviceModalVisible}
@@ -503,6 +757,202 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
     fontSize: 13,
     fontWeight: '800',
+  },
+
+  overviewHero: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: SURFACE_INPUT,
+    padding: 18,
+    marginBottom: 12,
+  },
+
+  overviewGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+
+  overviewSmallCard: {
+    flex: 1,
+    minWidth: 150,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: SURFACE_INPUT,
+    padding: 14,
+  },
+
+  overviewLabel: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 10,
+  },
+
+  overviewTotal: {
+    color: ACCENT_ORANGE,
+    fontSize: 24,
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+
+  overviewText: {
+    color: TEXT_SECONDARY,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+
+  overviewNumber: {
+    color: TEXT_PRIMARY,
+    fontSize: 22,
+    fontWeight: '900',
+  },
+
+  overviewPeriodText: {
+    color: TEXT_PRIMARY,
+    fontSize: 14,
+    fontWeight: '800',
+    lineHeight: 22,
+  },
+
+  overviewDate: {
+    color: TEXT_PRIMARY,
+    fontSize: 14,
+    fontWeight: '900',
+    marginBottom: 4,
+  },
+
+  overviewTime: {
+    color: TEXT_SECONDARY,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+
+  stateBox: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: SURFACE_INPUT,
+    padding: 14,
+    gap: 6,
+  },
+
+  stateBadge: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+
+  stateTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+
+  stateText: {
+    color: TEXT_SECONDARY,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+
+  eventsList: {
+    gap: 10,
+  },
+
+  eventCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: SURFACE_INPUT,
+    padding: 14,
+    gap: 12,
+  },
+
+  eventTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+
+  eventMain: {
+    flex: 1,
+    minWidth: 180,
+  },
+
+  eventLiters: {
+    color: ACCENT_ORANGE,
+    fontSize: 20,
+    fontWeight: '900',
+    marginBottom: 4,
+  },
+
+  eventDate: {
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  eventTag: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+
+  metaRow: {
+    flexDirection: 'row',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+
+  metaItem: {
+    flex: 1,
+    minWidth: 150,
+  },
+
+  metaLabel: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+
+  metaValue: {
+    color: TEXT_PRIMARY,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  addressRow: {
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: BORDER_SOFT,
+  },
+
+  addressLabel: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+
+  addressText: {
+    color: TEXT_PRIMARY,
+    fontSize: 14,
+    lineHeight: 20,
   },
 
   modalBackdrop: {

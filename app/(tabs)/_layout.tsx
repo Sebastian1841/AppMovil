@@ -8,14 +8,12 @@ import { colors } from '@/theme/colors';
 
 const iconByRoute: Record<string, keyof typeof Ionicons.glyphMap> = {
   map: 'map',
-  fuel: 'water',
   reports: 'bar-chart',
   profile: 'person-circle',
 };
 
 const labelByRoute: Record<string, string> = {
   map: 'Mapa',
-  fuel: 'Descargas',
   reports: 'Reportes',
   profile: 'Perfil',
 };
@@ -84,7 +82,6 @@ export default function TabsLayout() {
       })}
     >
       <Tabs.Screen name="map" options={{ title: 'Mapa' }} />
-      <Tabs.Screen name="fuel" options={{ title: 'Descargas' }} />
       <Tabs.Screen name="reports" options={{ title: 'Reportes' }} />
       <Tabs.Screen name="profile" options={{ title: 'Perfil' }} />
     </Tabs>
