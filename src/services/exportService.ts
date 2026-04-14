@@ -5,8 +5,6 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { Asset } from 'expo-asset';
 import Papa from 'papaparse';
-import { jsPDF } from 'jspdf';
-import { autoTable } from 'jspdf-autotable';
 
 type FuelEvent = {
   id?: string | number;
@@ -594,7 +592,7 @@ function buildPdfHtml(params: {
 }
 
 function drawMetricCard(params: {
-  doc: jsPDF;
+  doc: any;
   x: number;
   y: number;
   w: number;
@@ -708,6 +706,11 @@ export async function exportFuelPdf(params: {
   const deviceLabel = deviceName || identifier || 'Sin nombre';
 
   if (Platform.OS === 'web') {
+    const [{ jsPDF }, { autoTable }] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]);
+
     const doc = new jsPDF({
       orientation: 'portrait',
       unit: 'pt',
@@ -883,21 +886,6 @@ export async function exportFuelPdf(params: {
       fillColor: [255, 244, 236],
       valueColor: [16, 35, 114],
     });
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.setTextColor(16, 35, 114);
-    doc.text('Detalle de descargas', tableLeft, cardsY + 82);
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.setTextColor(102, 114, 122);
-    doc.text(
-      'Fecha, volumen, identificación y dirección de cada registro.',
-      tableLeft,
-      cardsY + 95,
-      { maxWidth: tableWidth }
-    );
 
     autoTable(doc, {
       startY: cardsY + 105,
